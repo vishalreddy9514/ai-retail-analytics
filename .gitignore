@@ -1,0 +1,16 @@
+# Data is downloaded/generated, never committed
+data/*
+!data/raw/
+data/raw/*
+!data/raw/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Spark / Delta local artefacts
+spark-warehouse/
+metastore_db/
+derby.log

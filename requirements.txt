@@ -1,0 +1,6 @@
+# Stage 1: data pipeline (local runs + tests). Databricks already ships Spark and Delta.
+pyspark==4.0.1
+delta-spark==4.0.0
+pandas>=2.2,<3
+openpyxl>=3.1
+pytest>=8.0

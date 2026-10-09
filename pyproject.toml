@@ -1,0 +1,9 @@
+[project]
+name = "ai-retail-analytics"
+version = "0.1.0"
+description = "Medallion pipeline, sales forecasting and a local LLM assistant on the UCI Online Retail dataset"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
