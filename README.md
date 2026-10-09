@@ -121,6 +121,7 @@ No Databricks account? Step 3 can run locally instead: see [Run the pipeline loc
 ```
 ai-retail-analytics/
 ├── README.md
+├── LICENSE                         # MIT
 ├── requirements.txt                # laptop: download, forecast, assistant, dashboard, tests
 ├── requirements-spark.txt          # optional: run the Spark pipeline locally
 ├── pyproject.toml                  # pytest config
@@ -355,7 +356,10 @@ Actions workflow installs `requirements-spark.txt` and runs everything on every 
 | `Java gateway process exited` (local Spark only) | Install Java 17 and set `JAVA_HOME`. |
 | `pip install pyspark` fails building a wheel | `pip install -U pip setuptools wheel`, then retry. |
 
-## Data source and licence
+## Licence and data source
+
+The code is released under the [MIT License](LICENSE).
+
 
 Chen, D. (2015). *Online Retail* [Dataset]. UCI Machine Learning Repository.
 <https://archive.ics.uci.edu/dataset/352/online+retail>. Licensed under CC BY 4.0 (see the dataset page). The dataset is not stored in this
