@@ -6,10 +6,10 @@ A small, end-to-end data engineering project on the
 
 1. **Bronze / Silver / Gold** medallion pipeline in PySpark + Delta Lake on Databricks Free Edition
 2. Seven-day revenue forecast with scikit-learn, evaluated on a chronological hold-out
-3. Local LLM assistant (Ollama) grounded in real metrics and forecasts *(stage 3)*
+3. Local LLM assistant (Ollama) that answers questions from the real metrics and forecast
 4. Streamlit dashboard *(stage 4)*
 
-> **Status:** Stage 1 (pipeline) runs on Databricks with real results below. Stage 2 (forecast) runs on the real Gold export, results below.
+> **Status:** Stage 1 (pipeline) runs on Databricks with real results below. Stage 2 (forecast) runs on the real Gold export, results below. Stage 3 (assistant) is implemented and unit-tested with a mocked LLM.
 
 ## Architecture
 
@@ -24,7 +24,9 @@ flowchart LR
     end
     G -->|export CSV| E[data/exports/gold_daily_sales.csv]
     E -->|forecasting.py| F[forecast_next_7_days.csv<br/>forecast_metrics.json]
-    E -.-> L[Ollama assistant - stage 3]
+    E --> L[assistant.py<br/>facts computed with pandas]
+    F --> L
+    L <-->|HTTP localhost:11434| O[Ollama<br/>llama3.2:3b]
     E -.-> D[Streamlit dashboard - stage 4]
 ```
 
@@ -60,7 +62,8 @@ ai-retail-analytics/
 │   ├── gold.py
 │   ├── quality.py                  # data quality checks
 │   ├── pipeline.py                 # runs the stages; local CLI entry point
-│   └── forecasting.py              # 7-day revenue forecast (scikit-learn)
+│   ├── forecasting.py              # 7-day revenue forecast (scikit-learn)
+│   └── assistant.py                # local LLM Q&A grounded in the data (Ollama)
 └── tests/
 ```
 
@@ -216,6 +219,49 @@ the yearly average, while "same weekday last week" follows the rising level auto
 With only one year of history, the models cannot learn yearly seasonality; more history
 (or a trend/seasonality feature) would be the next step. Saturdays are correctly forecast at £0.
 
+## Stage 3: local LLM assistant (Ollama)
+
+Ask questions in plain English and get answers based on the real Gold metrics and the forecast.
+The model runs locally through [Ollama](https://ollama.com): free, offline, and the data never leaves your machine.
+
+**How it stays grounded** (`src/retail_analytics/assistant.py`), without a vector database or agent framework:
+
+1. **pandas computes the facts**: totals, monthly revenue, average revenue per weekday, top days,
+   the last 14 days, the 7-day forecast (with its total and the change against the previous
+   7 days) and the model scores. If the question names a date (`2011-11-15`) or a month
+   (`November 2011`, `oct`), those days are added too. That is simple keyword retrieval.
+2. **The facts are sent to the model** with a system prompt telling it to use only those facts,
+   to quote figures exactly, and to say so when the data doesn't cover the question.
+   Temperature is 0.1 so answers are consistent.
+3. **The numbers are checked**: every number in the answer is compared with the facts, and any
+   that don't appear (for example, a sum the model worked out itself, or a made-up figure) are listed under the answer.
+
+The model does no arithmetic that matters: totals and percentage changes are calculated in
+pandas and given to it.
+
+**Setup:** install Ollama from <https://ollama.com/download> (choose "use Ollama locally", no account needed), then:
+
+```powershell
+ollama pull llama3.2:3b        # ~2 GB, runs on a laptop with 8 GB RAM
+```
+
+**Run** (from the project folder, venv active, after stage 2 has written `data/outputs/`):
+
+```powershell
+$env:PYTHONPATH="src"
+python -m retail_analytics.assistant "Which month had the highest revenue?"
+python -m retail_analytics.assistant --explain-forecast
+python -m retail_analytics.assistant                     # interactive: ask several questions
+python -m retail_analytics.assistant "How was November 2011?" --show-context   # also print the facts sent
+```
+
+Use another model with `--model` (e.g. `--model llama3.1:8b`), or set `OLLAMA_MODEL`. If Ollama
+runs somewhere else, set `OLLAMA_HOST` (default `http://localhost:11434`).
+
+**Limitations:** a 3B model can still misread or mix up figures, which is why the number
+check exists and why answers should be checked against the dashboard. It only knows what
+is in the Gold table (daily totals), not individual products or customers.
+
 ## Tests
 
 ```bash
@@ -236,6 +282,9 @@ while Spark starts.
 |---|---|
 | `No module named sklearn` | `pip install -r requirements.txt` with the venv active. |
 | `data/exports/gold_daily_sales.csv not found` | Download it from **Catalog → workspace → retail → raw_files → exports** and save it in `data/exports/`. |
+| `Cannot reach Ollama at http://localhost:11434` | Start the Ollama app (llama icon by the clock), or run `ollama serve` in another terminal. |
+| `Model 'llama3.2:3b' is not installed` | `ollama pull llama3.2:3b` |
+| Assistant is very slow | The first answer loads the model (10–60 s). On low-RAM laptops close other apps, or try `--model llama3.2:1b` after `ollama pull llama3.2:1b`. |
 | `JAVA_HOME is not set` / `Java gateway process exited` (local) | Install Java 17 (e.g. Temurin) and set `JAVA_HOME`. |
 | `pip install pyspark` fails building a wheel | Upgrade build tools in your venv: `pip install -U pip setuptools wheel`. |
 | `ModuleNotFoundError: retail_analytics` | Locally: set `PYTHONPATH=src`. On Databricks: open the notebook from the Git folder, not a copy, so `../src` exists. |
@@ -250,5 +299,5 @@ while Spark starts.
 
 - [x] Stage 1: dataset setup, Bronze/Silver/Gold pipeline, data quality checks, tests
 - [x] Stage 2: seven-day revenue forecast (scikit-learn, chronological split, MAE/RMSE)
-- [ ] Stage 3: Ollama assistant grounded in Gold metrics and forecasts
+- [x] Stage 3: Ollama assistant grounded in Gold metrics and forecasts
 - [ ] Stage 4: Streamlit dashboard
