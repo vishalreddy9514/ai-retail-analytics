@@ -52,7 +52,7 @@ def history_and_forecast_chart(gold: pd.DataFrame, forecast: pd.DataFrame | None
     data = pd.concat(frames, ignore_index=True)
 
     base = alt.Chart(data).encode(
-        x=alt.X("sales_date:T", title=None),
+        x=alt.X("sales_date:T", title=None, axis=alt.Axis(format="%d %b")),
         y=alt.Y("revenue:Q", title="Revenue (£)", axis=alt.Axis(format=",.0f")),
         color=alt.Color("series:N", scale=SERIES_SCALE, legend=alt.Legend(title=None, orient="top")),
         strokeDash=alt.condition(alt.datum.series == "Forecast", alt.value([6, 4]), alt.value([1, 0])),
