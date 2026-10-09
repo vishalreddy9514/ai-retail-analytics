@@ -173,7 +173,8 @@ def build_context(gold: pd.DataFrame, metrics: dict | None, forecast: pd.DataFra
     if forecast is not None:
         start = forecast.forecast_date.min()
         # Compare with the 7 complete days the forecast was built from (the partial last day is excluded).
-        last_7 = gold[gold.sales_date < start].tail(7).revenue.sum()
+        previous = gold[gold.sales_date < start].tail(7)
+        last_7 = previous.revenue.sum()
         total = forecast.forecast_revenue.sum()
         ranked = forecast.sort_values("forecast_revenue", ascending=False)
         lines += ["", f"7-DAY FORECAST (predictions, not actual sales; model: {forecast.model.iloc[0]}, "
@@ -184,8 +185,9 @@ def build_context(gold: pd.DataFrame, metrics: dict | None, forecast: pd.DataFra
             "- Forecast days ranked highest to lowest: " + "; ".join(
                 f"{f.forecast_date.date()} ({f.day_of_week}) {money(f.forecast_revenue)}" for f in ranked.itertuples()),
             f"- Forecast total for the 7 days: {money(total)}",
-            f"- Actual total for the 7 days before the forecast: {money(last_7)}",
-            f"- Change versus those 7 days: {signed_money(total - last_7)} ({(total - last_7) / last_7:+.1%})",
+            f"- Actual total for the previous 7 days ({previous.sales_date.min().date()} to "
+            f"{previous.sales_date.max().date()}, before the forecast starts): {money(last_7)}",
+            f"- Change versus the previous 7 days: {signed_money(total - last_7)} ({(total - last_7) / last_7:+.1%})",
         ]
         if ((forecast.day_of_week == "Sat") & (forecast.forecast_revenue == 0)).any():
             lines.append("- Saturday is forecast at £0.00 because the shop does not trade on Saturdays.")
