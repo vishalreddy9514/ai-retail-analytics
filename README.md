@@ -7,9 +7,9 @@ A small, end-to-end data engineering project on the
 1. **Bronze / Silver / Gold** medallion pipeline in PySpark + Delta Lake on Databricks Free Edition
 2. Seven-day revenue forecast with scikit-learn, evaluated on a chronological hold-out
 3. Local LLM assistant (Ollama) that answers questions from the real metrics and forecast
-4. Streamlit dashboard *(stage 4)*
+4. Streamlit dashboard with historical sales, the forecast, model accuracy and AI explanations
 
-> **Status:** Stage 1 (pipeline) runs on Databricks with real results below. Stage 2 (forecast) runs on the real Gold export, results below. Stage 3 (assistant) is implemented and unit-tested with a mocked LLM.
+> **Status:** Stage 1 (pipeline) runs on Databricks with real results below. Stage 2 (forecast) runs on the real Gold export, results below. Stage 3 (assistant) is tested with llama3.2:3b on the real data. Stage 4 (dashboard) is implemented and tested headlessly.
 
 ## Architecture
 
@@ -27,7 +27,9 @@ flowchart LR
     E --> L[assistant.py<br/>facts computed with pandas]
     F --> L
     L <-->|HTTP localhost:11434| O[Ollama<br/>llama3.2:3b]
-    E -.-> D[Streamlit dashboard - stage 4]
+    E --> D[streamlit_app.py<br/>dashboard]
+    F --> D
+    L --> D
 ```
 
 The pipeline logic lives in a normal Python package (`src/retail_analytics/`). The
@@ -42,6 +44,7 @@ ai-retail-analytics/
 ├── requirements.txt              # laptop: download, forecast, tests
 ├── requirements-spark.txt        # optional: run the Spark pipeline locally
 ├── pyproject.toml                  # pytest config
+├── streamlit_app.py                # dashboard (stage 4)
 ├── data/                           # git-ignored; created by the scripts
 │   ├── raw/online_retail.csv
 │   ├── delta/<table>/              # local Delta tables
@@ -260,9 +263,42 @@ python -m retail_analytics.assistant "How was November 2011?" --show-context   #
 Use another model with `--model` (e.g. `--model llama3.1:8b`), or set `OLLAMA_MODEL`. If Ollama
 runs somewhere else, set `OLLAMA_HOST` (default `http://localhost:11434`).
 
+**Real run with `llama3.2:3b` (9 October 2026).** The first version gave the model raw monthly
+totals and let it compare months itself. Asked *"How did November 2011 compare to October 2011?"*,
+it invented monthly units and customer counts and subtracted wrongly. The number check flagged four
+figures, and it also paired a forecast value with the wrong date. After moving every calculation into pandas
+(month-over-month changes, month comparisons, a ranked forecast), the same questions gave:
+
+- *"November 2011 revenue (£1,452,115.98) was £348,785.06 (+31.6%) higher than October 2011 revenue (£1,103,330.92)."*: no flagged numbers.
+- Forecast explanation: highest day 2011-12-12 (Mon) £80,011.23, Saturday £0.00, total £365,799.46,
+  seasonal_naive MAE £11,207.54 = 25.3% of average daily revenue in the test period.
+
 **Limitations:** a 3B model can still misread or mix up figures, which is why the number
 check exists and why answers should be checked against the dashboard. It only knows what
 is in the Gold table (daily totals), not individual products or customers.
+
+## Stage 4: Streamlit dashboard
+
+```powershell
+streamlit run streamlit_app.py
+```
+It opens at <http://localhost:8501>. It reads `data/exports/gold_daily_sales.csv` and `data/outputs/`,
+so run the forecast (stage 2) first. Ollama must be running for the AI sections only; the rest works without it.
+
+What it shows:
+
+- **KPIs:** total revenue, orders, average revenue per trading day, average order value.
+- **Daily revenue and 7-day forecast:** actual sales (blue) and the forecast (orange, dashed),
+  with a sidebar slider for how many days of history to show. Hover any point for its value.
+- **Monthly revenue** and the **next 7 days** table with the forecast total.
+- **AI explanation of the forecast:** one click asks the local model (stage 3) to explain the
+  forecast. Any number not found in the data is flagged, and "Facts sent to the model" shows exactly what it was given.
+- **Ask a question:** free-text questions answered from the same facts.
+- **How accurate is the forecast?:** MAE/RMSE per model, the typical error as a % of daily revenue,
+  and a chart of actual vs predicted revenue over the test period for any model.
+
+Colours: blue `#2a78d6` and orange `#eb6834`, a pair chosen to stay distinguishable for colour-blind
+readers. Every chart with two series has a legend.
 
 ## Tests
 
@@ -270,7 +306,8 @@ is in the Gold table (daily totals), not individual products or customers.
 pytest -q
 ```
 
-With only `requirements.txt` installed, the forecasting tests run and the Spark tests are
+With only `requirements.txt` installed, the forecasting, assistant and dashboard tests run
+(Ollama is replaced by a fake, so it doesn't need to be running) and the Spark tests are
 reported as skipped. Install `requirements-spark.txt` (and Java 17) to run them all.
 
 The Spark tests run on a local SparkSession with small hand-written rows that cover each cleaning
@@ -287,6 +324,9 @@ while Spark starts.
 | `Cannot reach Ollama at http://localhost:11434` | Start the Ollama app (llama icon by the clock), or run `ollama serve` in another terminal. |
 | `Model 'llama3.2:3b' is not installed` | `ollama pull llama3.2:3b` |
 | Assistant is very slow | The first answer loads the model (10–60 s). On low-RAM laptops close other apps, or try `--model llama3.2:1b` after `ollama pull llama3.2:1b`. |
+| `streamlit` is not recognized | `pip install -r requirements.txt` with the venv active. |
+| Dashboard says `gold_daily_sales.csv not found` | Save the Databricks export to `data/exports/` (see step 6 above). |
+| Port 8501 already in use | `streamlit run streamlit_app.py --server.port 8502` |
 | `JAVA_HOME is not set` / `Java gateway process exited` (local) | Install Java 17 (e.g. Temurin) and set `JAVA_HOME`. |
 | `pip install pyspark` fails building a wheel | Upgrade build tools in your venv: `pip install -U pip setuptools wheel`. |
 | `ModuleNotFoundError: retail_analytics` | Locally: set `PYTHONPATH=src`. On Databricks: open the notebook from the Git folder, not a copy, so `../src` exists. |
@@ -302,4 +342,4 @@ while Spark starts.
 - [x] Stage 1: dataset setup, Bronze/Silver/Gold pipeline, data quality checks, tests
 - [x] Stage 2: seven-day revenue forecast (scikit-learn, chronological split, MAE/RMSE)
 - [x] Stage 3: Ollama assistant grounded in Gold metrics and forecasts
-- [ ] Stage 4: Streamlit dashboard
+- [x] Stage 4: Streamlit dashboard
