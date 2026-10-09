@@ -26,16 +26,20 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
 
 SYSTEM_PROMPT = """You are a retail sales analyst for a UK online gift retailer.
 Answer using ONLY the facts provided in the DATA section. Rules:
-- Quote figures exactly as they appear in the data, in pounds (£).
-- If the data does not contain the answer, say "The data provided does not cover that."
+- Copy figures exactly as they appear in the DATA, in pounds (£), together with the date or
+  month they belong to. Never move a figure to a different date or month.
+- Never calculate differences, totals, averages or percentages yourself. Use the precomputed
+  ones in the DATA (for example "versus previous month", "COMPARISON", "ranked").
+- If a figure the question needs is not in the DATA, say it is not available.
+- Forecast values are predictions, not actual sales.
 - Do not invent numbers, products, customers or causes. You may point out patterns that
   are visible in the data (for example, Saturdays have no trading).
 - Keep answers short: at most 5 sentences or a short bullet list."""
 
 FORECAST_QUESTION = (
-    "Explain the 7-day revenue forecast in plain English: the expected total, how it compares "
-    "with the last 7 actual days, which days are highest and lowest, and how reliable the "
-    "model is based on its test MAE compared with the baseline."
+    "Explain the 7-day revenue forecast in plain English: the forecast total and its change versus "
+    "the previous 7 days, the highest and lowest forecast days (use the ranked list), which model "
+    "is used and why, and how large its typical daily error (MAE) is."
 )
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -80,18 +84,55 @@ def _day_rows(days: pd.DataFrame) -> list[str]:
     ]
 
 
-def days_mentioned(gold: pd.DataFrame, question: str) -> pd.DataFrame:
-    """Simple retrieval: rows for ISO dates or month names that appear in the question."""
+def signed_money(value: float) -> str:
+    return f"{'+' if value >= 0 else '-'}£{abs(value):,.2f}"
+
+
+def dates_mentioned(gold: pd.DataFrame, question: str) -> pd.DataFrame:
+    """Rows for ISO dates (YYYY-MM-DD) that appear in the question."""
+    wanted = re.findall(r"\d{4}-\d{2}-\d{2}", question)
+    return gold[gold["sales_date"].dt.strftime("%Y-%m-%d").isin(wanted)]
+
+
+def months_mentioned(gold: pd.DataFrame, question: str) -> list[pd.Period]:
+    """Months named in the question ('November 2011', 'oct'), limited to months in the data."""
     q = question.lower()
-    mask = gold["sales_date"].dt.strftime("%Y-%m-%d").isin(re.findall(r"\d{4}-\d{2}-\d{2}", q))
+    years = {int(y) for y in re.findall(r"\b(20\d\d)\b", q)}
+    available = gold["sales_date"].dt.to_period("M").unique()
+    found = []
     for number, name in enumerate(MONTHS, start=1):
         if re.search(rf"\b({name}|{name[:3]})\b", q):
-            in_month = gold["sales_date"].dt.month == number
-            years = [int(y) for y in re.findall(r"\b(20\d\d)\b", q)]
-            if years:
-                in_month &= gold["sales_date"].dt.year.isin(years)
-            mask |= in_month
-    return gold[mask]
+            found += [m for m in available if m.month == number and (not years or m.year in years)]
+    return sorted(set(found))
+
+
+def monthly_summary(gold: pd.DataFrame) -> pd.DataFrame:
+    monthly = gold.groupby(gold.sales_date.dt.to_period("M")).agg(
+        revenue=("revenue", "sum"), orders=("orders", "sum"), units_sold=("units_sold", "sum"),
+        trading_days=("is_trading_day", "sum"), last_day=("sales_date", "max"))
+    monthly["revenue_change"] = monthly.revenue.diff()
+    monthly["revenue_change_pct"] = monthly.revenue.pct_change()
+    monthly["orders_change"] = monthly.orders.diff()
+    monthly["partial"] = monthly.last_day < monthly.index.to_timestamp(how="end").normalize()
+    return monthly
+
+
+def _month_line(month, r) -> str:
+    line = (f"- {month}{' (partial month)' if r.partial else ''}: revenue {money(r.revenue)}, "
+            f"orders {int(r.orders):,}, units sold {int(r.units_sold):,}, trading days {int(r.trading_days)}")
+    if pd.notna(r.revenue_change):
+        line += (f"; versus previous month: revenue {signed_money(r.revenue_change)} "
+                 f"({r.revenue_change_pct:+.1%}), orders {int(r.orders_change):+,}")
+    return line
+
+
+def _compare_months(monthly: pd.DataFrame, a, b) -> str:
+    ra, rb = monthly.loc[a], monthly.loc[b]
+    diff = ra.revenue - rb.revenue
+    return (f"- {a} versus {b}: revenue {money(ra.revenue)} versus {money(rb.revenue)}, "
+            f"difference {signed_money(diff)} ({diff / rb.revenue:+.1%}); orders {int(ra.orders):,} versus "
+            f"{int(rb.orders):,}, difference {int(ra.orders - rb.orders):+,}; units sold "
+            f"{int(ra.units_sold):,} versus {int(rb.units_sold):,}, difference {int(ra.units_sold - rb.units_sold):+,}")
 
 
 def build_context(gold: pd.DataFrame, metrics: dict | None, forecast: pd.DataFrame | None,
@@ -101,6 +142,7 @@ def build_context(gold: pd.DataFrame, metrics: dict | None, forecast: pd.DataFra
         "DATA COVERAGE",
         f"- Daily sales from {gold.sales_date.min().date()} to {gold.sales_date.max().date()} "
         f"({len(gold)} days, {len(trading)} trading days). The last day is partial (data ends at 12:50).",
+        "- Only daily totals are available: no product-level data, and no unique-customer counts per month.",
         "",
         "TOTALS",
         f"- Total revenue: {money(gold.revenue.sum())}",
@@ -110,10 +152,16 @@ def build_context(gold: pd.DataFrame, metrics: dict | None, forecast: pd.DataFra
         "",
         "MONTHLY REVENUE",
     ]
-    monthly = gold.groupby(gold.sales_date.dt.to_period("M")).agg(
-        revenue=("revenue", "sum"), orders=("orders", "sum"), trading_days=("is_trading_day", "sum"))
-    lines += [f"- {r.Index}: revenue {money(r.revenue)}, orders {int(r.orders):,}, "
-              f"trading days {int(r.trading_days)}" for r in monthly.itertuples()]
+    monthly = monthly_summary(gold)
+    lines += [_month_line(m, r) for m, r in zip(monthly.index, monthly.itertuples())]
+    best = monthly.revenue.idxmax()
+    lines.append(f"- Highest revenue month: {best} ({money(monthly.revenue.max())})")
+
+    months = months_mentioned(gold, question)
+    if len(months) >= 2:
+        lines += ["", "COMPARISON OF MONTHS IN THE QUESTION (later month first)"]
+        lines += [_compare_months(monthly, later, earlier)
+                  for earlier, later in zip(months, months[1:])]
 
     lines += ["", "AVERAGE REVENUE BY DAY OF WEEK (all days)"]
     weekday = gold.groupby("day_of_week").revenue.mean().reindex(WEEKDAYS).dropna()
@@ -127,27 +175,41 @@ def build_context(gold: pd.DataFrame, metrics: dict | None, forecast: pd.DataFra
         # Compare with the 7 complete days the forecast was built from (the partial last day is excluded).
         last_7 = gold[gold.sales_date < start].tail(7).revenue.sum()
         total = forecast.forecast_revenue.sum()
-        lines += ["", f"7-DAY FORECAST (model: {forecast.model.iloc[0]}, starts {start.date()})"]
+        ranked = forecast.sort_values("forecast_revenue", ascending=False)
+        lines += ["", f"7-DAY FORECAST (predictions, not actual sales; model: {forecast.model.iloc[0]}, "
+                      f"starts {start.date()})"]
         lines += [f"- {f.forecast_date.date()} ({f.day_of_week}): {money(f.forecast_revenue)}"
                   for f in forecast.itertuples()]
         lines += [
+            "- Forecast days ranked highest to lowest: " + "; ".join(
+                f"{f.forecast_date.date()} ({f.day_of_week}) {money(f.forecast_revenue)}" for f in ranked.itertuples()),
             f"- Forecast total for the 7 days: {money(total)}",
             f"- Actual total for the 7 days before the forecast: {money(last_7)}",
-            f"- Change versus the last 7 days: {(total - last_7) / last_7:+.1%}",
+            f"- Change versus those 7 days: {signed_money(total - last_7)} ({(total - last_7) / last_7:+.1%})",
         ]
+        if ((forecast.day_of_week == "Sat") & (forecast.forecast_revenue == 0)).any():
+            lines.append("- Saturday is forecast at £0.00 because the shop does not trade on Saturdays.")
     else:
         lines += ["", "7-DAY FORECAST: not available (run the forecasting step)."]
 
     if metrics is not None:
+        best_model = metrics["best_model"]
+        best_mae = metrics["models"][best_model]["mae"]
         lines += ["", "FORECAST MODEL EVALUATION",
                   f"- Trained on {metrics['train_start']} to {metrics['train_end']}, "
                   f"tested on {metrics['test_start']} to {metrics['test_end']} ({metrics['test_rows']} days)."]
         lines += [f"- {name}: MAE {money(m['mae'])}, RMSE {money(m['rmse'])}"
                   for name, m in metrics["models"].items()]
-        lines.append(f"- Best model (lowest MAE): {metrics['best_model']}. "
+        lines.append(f"- Best model (lowest MAE): {best_model}. "
                      "seasonal_naive means 'same as the same weekday last week'.")
+        lines += [f"- {best_model} MAE is {money(m['mae'] - best_mae)} lower than {name}."
+                  for name, m in metrics["models"].items() if name != best_model]
+        if metrics.get("test_mean_revenue"):
+            mean = metrics["test_mean_revenue"]
+            lines.append(f"- Average daily revenue in the test period: {money(mean)}; the best model's "
+                         f"typical daily error (MAE) is {best_mae / mean:.1%} of that.")
 
-    requested = days_mentioned(gold, question)
+    requested = dates_mentioned(gold, question)
     if not requested.empty:
         lines += ["", "DAYS MENTIONED IN THE QUESTION"] + _day_rows(requested)
     return "\n".join(lines)
@@ -178,7 +240,7 @@ def ask_ollama(system: str, user: str, model: str = OLLAMA_MODEL, host: str = OL
         "model": model,
         "stream": False,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "options": {"temperature": 0.1, "num_ctx": 8192},
+        "options": {"temperature": 0, "num_ctx": 8192},
     }
     request = urllib.request.Request(
         f"{host}/api/chat", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}

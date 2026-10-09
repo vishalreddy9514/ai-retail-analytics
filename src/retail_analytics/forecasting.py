@@ -130,6 +130,7 @@ def run_forecast(daily: pd.DataFrame, test_days: int = TEST_DAYS) -> dict:
         "test_rows": len(test),
         "models": metrics,
         "best_model": best_model,
+        "test_mean_revenue": round(float(test[TARGET].mean()), 2),
     }
     return {
         "summary": summary,

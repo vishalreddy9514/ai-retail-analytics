@@ -226,13 +226,15 @@ The model runs locally through [Ollama](https://ollama.com): free, offline, and 
 
 **How it stays grounded** (`src/retail_analytics/assistant.py`), without a vector database or agent framework:
 
-1. **pandas computes the facts**: totals, monthly revenue, average revenue per weekday, top days,
-   the last 14 days, the 7-day forecast (with its total and the change against the previous
-   7 days) and the model scores. If the question names a date (`2011-11-15`) or a month
-   (`November 2011`, `oct`), those days are added too. That is simple keyword retrieval.
+1. **pandas computes the facts**: totals, monthly revenue with the change from the previous month,
+   average revenue per weekday, top days, the last 14 days, the 7-day forecast (ranked, with its
+   total and the change against the previous 7 days), and the model scores with the typical error as a
+   % of daily revenue. If the question names dates (`2011-11-15`), those days are added; if it
+   names two or more months (`November 2011`, `oct`), a ready-made comparison is added.
+   That is simple keyword retrieval.
 2. **The facts are sent to the model** with a system prompt telling it to use only those facts,
-   to quote figures exactly, and to say so when the data doesn't cover the question.
-   Temperature is 0.1 so answers are consistent.
+   to copy each figure with its own date, never to calculate anything itself, and to say when
+   a figure is not available. Temperature is 0, so the same question gets the same answer.
 3. **The numbers are checked**: every number in the answer is compared with the facts, and any
    that don't appear (for example, a sum the model worked out itself, or a made-up figure) are listed under the answer.
 

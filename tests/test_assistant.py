@@ -8,7 +8,8 @@ import pytest
 
 from retail_analytics import assistant
 from retail_analytics.assistant import (
-    OllamaError, answer_question, build_context, days_mentioned, load_inputs, unverified_numbers,
+    OllamaError, answer_question, build_context, dates_mentioned, load_inputs, months_mentioned,
+    unverified_numbers,
 )
 from retail_analytics.forecasting import run_forecast, save_outputs
 
@@ -41,9 +42,9 @@ def inputs(gold, tmp_path):
 def test_context_contains_computed_facts(inputs, gold):
     context = build_context(*inputs)
     assert f"Total revenue: £{gold.revenue.sum():,.2f}" in context
-    assert "MONTHLY REVENUE" in context and "2011-10: revenue" in context
+    assert "MONTHLY REVENUE" in context and "- 2011-10: revenue" in context
     assert "- Sat: £0.00" in context
-    assert "7-DAY FORECAST (model:" in context
+    assert "7-DAY FORECAST (predictions, not actual sales; model:" in context
     assert "FORECAST MODEL EVALUATION" in context
 
 
@@ -51,12 +52,45 @@ def test_context_without_forecast_outputs(gold):
     assert "7-DAY FORECAST: not available" in build_context(gold, None, None)
 
 
-def test_days_mentioned_finds_dates_and_months(gold):
-    assert len(days_mentioned(gold, "What happened on 2011-10-05?")) == 1
-    assert len(days_mentioned(gold, "How was October 2011?")) == 31
-    assert len(days_mentioned(gold, "Compare oct and nov")) == 61
-    assert days_mentioned(gold, "What is the total revenue?").empty
+def test_dates_and_months_mentioned(gold):
+    assert len(dates_mentioned(gold, "What happened on 2011-10-05?")) == 1
+    assert [str(m) for m in months_mentioned(gold, "How was October 2011?")] == ["2011-10"]
+    assert [str(m) for m in months_mentioned(gold, "Compare nov and oct")] == ["2011-10", "2011-11"]
+    assert months_mentioned(gold, "What is the total revenue?") == []
     assert "DAYS MENTIONED IN THE QUESTION" in build_context(gold, None, None, "sales on 2011-10-05")
+
+
+def test_month_comparison_is_precomputed(gold):
+    context = build_context(gold, None, None, "How did November 2011 compare to October 2011?")
+    month = gold.sales_date.dt.month
+    nov, octo = gold[month == 11].revenue.sum(), gold[month == 10].revenue.sum()
+    diff = nov - octo
+
+    assert "COMPARISON OF MONTHS IN THE QUESTION" in context
+    assert (f"- 2011-11 versus 2011-10: revenue £{nov:,.2f} versus £{octo:,.2f}, "
+            f"difference +£{diff:,.2f} ({diff / octo:+.1%})") in context
+
+
+def test_monthly_lines_show_change_and_partial_month(gold):
+    context = build_context(gold.iloc[:-1], None, None)
+    september = next(l for l in context.splitlines() if l.startswith("- 2011-09"))
+    assert "versus previous month" not in september  # first month has nothing to compare with
+    assert "- 2011-11 (partial month):" in context
+    assert "versus previous month: revenue +£" in context
+    monthly = gold.iloc[:-1].groupby(gold.sales_date.dt.to_period("M")).revenue.sum()
+    assert f"Highest revenue month: {monthly.idxmax()}" in context
+
+
+def test_forecast_is_ranked_and_error_is_explained(inputs):
+    gold, metrics, forecast = inputs
+    forecast.loc[forecast.day_of_week == "Sat", "forecast_revenue"] = 0.0
+    context = build_context(gold, metrics, forecast)
+    top = forecast.sort_values("forecast_revenue", ascending=False).iloc[0]
+
+    assert (f"ranked highest to lowest: {top.forecast_date.date()} ({top.day_of_week}) "
+            f"£{top.forecast_revenue:,.2f}") in context
+    assert "Saturday is forecast at £0.00" in context
+    assert "typical daily error (MAE) is" in context
 
 
 def test_unverified_numbers_flags_only_unknown_figures():
