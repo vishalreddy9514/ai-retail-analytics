@@ -9,7 +9,7 @@ A small, end-to-end data engineering project on the
 3. Local LLM assistant (Ollama) grounded in real metrics and forecasts *(stage 3)*
 4. Streamlit dashboard *(stage 4)*
 
-> **Status:** Stage 1 (pipeline) runs on Databricks with real results below. Stage 2 (forecast) is implemented and unit-tested; real results pending.
+> **Status:** Stage 1 (pipeline) runs on Databricks with real results below. Stage 2 (forecast) runs on the real Gold export, results below.
 
 ## Architecture
 
@@ -200,7 +200,21 @@ Outputs in `data/outputs/`:
 | `forecast_test_predictions.csv` | actual vs predicted revenue for every test day, per model |
 | `forecast_next_7_days.csv` | `forecast_date`, `day_of_week`, `forecast_revenue`, `model` |
 
-**Results:** *not filled in yet: run it on the real Gold export and record the printed table here.*
+**Results** (real Gold export, run on 9 October 2026). Train: 2011-01-04 to 2011-10-13 (283 days).
+Test: 2011-10-14 to 2011-12-08 (56 days).
+
+| Model | MAE (£) | RMSE (£) |
+|---|---|---|
+| **seasonal_naive** (baseline) | **11,207.54** | **15,904.82** |
+| random_forest | 11,562.84 | 16,640.33 |
+| linear_regression | 13,192.54 | 17,882.29 |
+
+The baseline wins, so it is used for the 7-day forecast. The test window is the pre-Christmas
+peak, and revenue there is higher than anything in the training period. A random forest
+cannot predict above the range it was trained on, and the linear model is pulled towards
+the yearly average, while "same weekday last week" follows the rising level automatically.
+With only one year of history, the models cannot learn yearly seasonality; more history
+(or a trend/seasonality feature) would be the next step. Saturdays are correctly forecast at £0.
 
 ## Tests
 
