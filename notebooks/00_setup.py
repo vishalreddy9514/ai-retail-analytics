@@ -14,5 +14,5 @@ display(spark.sql(f"SHOW VOLUMES IN {CATALOG}.{SCHEMA}"))
 
 # COMMAND ----------
 
-# Run this after uploading: it should list online_retail.csv (about 45 MB).
+# Run this after uploading: it should list online_retail.csv.
 display(dbutils.fs.ls(f"/Volumes/{CATALOG}/{SCHEMA}/raw_files"))

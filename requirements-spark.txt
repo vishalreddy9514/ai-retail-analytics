@@ -1,0 +1,5 @@
+# Optional: run the Bronze/Silver/Gold pipeline and its tests locally (needs Java 17).
+# Not needed for Databricks, which already ships Spark and Delta Lake.
+-r requirements.txt
+pyspark==4.0.1
+delta-spark==4.0.0

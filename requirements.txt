@@ -1,6 +1,5 @@
-# Stage 1: data pipeline (local runs + tests). Databricks already ships Spark and Delta.
-pyspark==4.0.1
-delta-spark==4.0.0
-pandas>=2.2,<3
+# Runs on your laptop: data download, forecasting, tests.
+pandas>=2.2
 openpyxl>=3.1
+scikit-learn>=1.4
 pytest>=8.0

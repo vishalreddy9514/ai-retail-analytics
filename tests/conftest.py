@@ -1,10 +1,12 @@
 import pytest
 
-from retail_analytics.storage import get_local_spark
-
 
 @pytest.fixture(scope="session")
 def spark():
+    # Spark tests are skipped when PySpark isn't installed (see requirements-spark.txt).
+    pytest.importorskip("pyspark")
+    from retail_analytics.storage import get_local_spark
+
     session = get_local_spark("ai-retail-analytics-tests")
     yield session
     session.stop()

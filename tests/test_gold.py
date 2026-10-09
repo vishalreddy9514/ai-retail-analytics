@@ -1,5 +1,7 @@
 import pytest
 
+pytest.importorskip("pyspark")  # Spark tests need requirements-spark.txt
+
 from retail_analytics.bronze import RAW_SCHEMA
 from retail_analytics.gold import build_gold_daily_sales
 from retail_analytics.quality import DataQualityError, gold_checks, run_checks

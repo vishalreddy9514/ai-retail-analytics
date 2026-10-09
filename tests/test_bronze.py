@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("pyspark")  # Spark tests need requirements-spark.txt
+
 from retail_analytics.bronze import SOURCE_COLUMNS, build_bronze
 
 CSV_TEXT = """InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country

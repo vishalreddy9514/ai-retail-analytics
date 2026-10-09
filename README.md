@@ -5,11 +5,11 @@ A small, end-to-end data engineering project on the
 (UK online gift retailer, Dec 2010 to Dec 2011):
 
 1. **Bronze / Silver / Gold** medallion pipeline in PySpark + Delta Lake on Databricks Free Edition
-2. Seven-day sales forecast with scikit-learn *(stage 2, coming next)*
+2. Seven-day revenue forecast with scikit-learn, evaluated on a chronological hold-out
 3. Local LLM assistant (Ollama) grounded in real metrics and forecasts *(stage 3)*
 4. Streamlit dashboard *(stage 4)*
 
-> **Status:** Stage 1 (dataset + Bronze/Silver/Gold pipeline) is implemented and unit-tested.
+> **Status:** Stage 1 (pipeline) runs on Databricks with real results below. Stage 2 (forecast) is implemented and unit-tested; real results pending.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ flowchart LR
         S --> G[(Gold<br/>gold_daily_sales<br/>one row per day)]
     end
     G -->|export CSV| E[data/exports/gold_daily_sales.csv]
-    E -.-> F[Forecast - stage 2]
+    E -->|forecasting.py| F[forecast_next_7_days.csv<br/>forecast_metrics.json]
     E -.-> L[Ollama assistant - stage 3]
     E -.-> D[Streamlit dashboard - stage 4]
 ```
@@ -37,12 +37,14 @@ Databricks, locally, and in `pytest`.
 ```
 ai-retail-analytics/
 ├── README.md
-├── requirements.txt
+├── requirements.txt              # laptop: download, forecast, tests
+├── requirements-spark.txt        # optional: run the Spark pipeline locally
 ├── pyproject.toml                  # pytest config
 ├── data/                           # git-ignored; created by the scripts
 │   ├── raw/online_retail.csv
 │   ├── delta/<table>/              # local Delta tables
-│   └── exports/gold_daily_sales.csv
+│   ├── exports/gold_daily_sales.csv
+│   └── outputs/                  # forecast results
 ├── notebooks/                      # Databricks notebooks (source format .py)
 │   ├── 00_setup.py
 │   ├── 01_bronze_ingest.py
@@ -57,7 +59,8 @@ ai-retail-analytics/
 │   ├── silver.py
 │   ├── gold.py
 │   ├── quality.py                  # data quality checks
-│   └── pipeline.py                 # runs the stages; local CLI entry point
+│   ├── pipeline.py                 # runs the stages; local CLI entry point
+│   └── forecasting.py              # 7-day revenue forecast (scikit-learn)
 └── tests/
 ```
 
@@ -125,7 +128,7 @@ If the download fails, download the zip manually from the UCI page, unzip it and
 
 ### 2b. Run locally (optional, same code)
 
-Needs Java 17 (`java -version`). On first run Spark downloads the Delta Lake jars from Maven (~5 MB).
+Needs Java 17 (`java -version`) and `pip install -r requirements-spark.txt`. On first run Spark downloads the Delta Lake jars from Maven (~5 MB).
 
 ```bash
 PYTHONPATH=src python -m retail_analytics.pipeline
@@ -135,14 +138,69 @@ PYTHONPATH=src python -m retail_analytics.pipeline
 It prints the row counts, each data quality check as `[PASS]`/`[FAIL]`, the quarantine
 counts by reason, and writes `data/exports/gold_daily_sales.csv`.
 
-### Expected results on the full dataset
+### Results on the full dataset
 
-- Bronze: **541,909** rows (the row count UCI publishes for this dataset).
-- Gold: **374** rows, one per day from 2010-12-01 to 2011-12-09.
-- Silver and quarantine counts: record the numbers your run prints here.
-  *(Not filled in yet: they have not been run against the full dataset.)*
+From a run on Databricks Free Edition (serverless), 9 October 2026:
+
+| Layer | Rows |
+|---|---|
+| Bronze | 541,909 (matches the row count UCI publishes) |
+| Silver | 522,568 |
+| Quarantine | 19,341 |
+| Gold | 374 days (2010-12-01 to 2011-12-09) |
+
+| Quarantine reason | Rows |
+|---|---|
+| cancelled_invoice | 9,288 |
+| duplicate | 5,221 |
+| non_product_code | 2,315 |
+| non_positive_quantity | 1,336 |
+| non_positive_unit_price | 1,181 |
+
+Silver + quarantine = Bronze, so every raw row is accounted for. No row failed type
+parsing (no `invalid_*` reasons). All 13 data quality checks passed, and Gold revenue
+reconciles exactly with Silver (£10,247,905.13). Saturdays have zero revenue: the
+retailer does not trade on Saturdays.
 
 Note: 2011-12-09 is a partial day (data ends at 12:50), so its revenue is lower than a normal day.
+
+## Stage 2: seven-day revenue forecast
+
+Runs on your laptop with pandas and scikit-learn, reading the Gold export.
+
+**How it works** (`src/retail_analytics/forecasting.py`):
+
+- **Target:** daily `revenue`. The last day (2011-12-09) is dropped because the data stops at 12:50 that day.
+- **Features:** day of week, revenue 7 and 14 days ago, and the 7-day and 28-day averages ending 7 days ago.
+  Every feature is at least 7 days old, so one model predicts all 7 future days from known
+  history, and no future information can leak into training.
+- **Chronological split:** the last 56 days (8 weeks) are the test set; everything before is training.
+  Time series are never shuffled.
+- **Models compared:**
+  - `seasonal_naive` baseline: "same as the same weekday last week". A model is only useful if it beats this.
+  - `linear_regression`: Ridge regression on scaled features and one-hot weekday.
+  - `random_forest`: 300 trees, `random_state=42` for reproducible results.
+- **Metrics:** MAE (average error in £) and RMSE (penalises big misses more), on the test set.
+- **Forecast:** the model with the lowest test MAE is refit on all history and predicts the next 7 days.
+
+```powershell
+# Windows, from the project folder with .venv active
+pip install -r requirements.txt
+$env:PYTHONPATH="src"
+python -m retail_analytics.forecasting
+```
+On Mac/Linux: `PYTHONPATH=src python -m retail_analytics.forecasting`.
+
+Input: `data/exports/gold_daily_sales.csv` (downloaded from Databricks, step 6 above).
+Outputs in `data/outputs/`:
+
+| File | Contents |
+|---|---|
+| `forecast_metrics.json` | train/test date ranges, MAE and RMSE per model, best model |
+| `forecast_test_predictions.csv` | actual vs predicted revenue for every test day, per model |
+| `forecast_next_7_days.csv` | `forecast_date`, `day_of_week`, `forecast_revenue`, `model` |
+
+**Results:** *not filled in yet: run it on the real Gold export and record the printed table here.*
 
 ## Tests
 
@@ -150,7 +208,10 @@ Note: 2011-12-09 is a partial day (data ends at 12:50), so its revenue is lower 
 pytest -q
 ```
 
-Tests run on a local SparkSession with small hand-written rows that cover each cleaning
+With only `requirements.txt` installed, the forecasting tests run and the Spark tests are
+reported as skipped. Install `requirements-spark.txt` (and Java 17) to run them all.
+
+The Spark tests run on a local SparkSession with small hand-written rows that cover each cleaning
 rule, the Gold aggregation and zero-filling, the quality checks, and one end-to-end run
 writing real Delta tables to a temporary folder. The first run takes about a minute
 while Spark starts.
@@ -159,6 +220,8 @@ while Spark starts.
 
 | Problem | Fix |
 |---|---|
+| `No module named sklearn` | `pip install -r requirements.txt` with the venv active. |
+| `data/exports/gold_daily_sales.csv not found` | Download it from **Catalog → workspace → retail → raw_files → exports** and save it in `data/exports/`. |
 | `JAVA_HOME is not set` / `Java gateway process exited` (local) | Install Java 17 (e.g. Temurin) and set `JAVA_HOME`. |
 | `pip install pyspark` fails building a wheel | Upgrade build tools in your venv: `pip install -U pip setuptools wheel`. |
 | `ModuleNotFoundError: retail_analytics` | Locally: set `PYTHONPATH=src`. On Databricks: open the notebook from the Git folder, not a copy, so `../src` exists. |
@@ -172,6 +235,6 @@ while Spark starts.
 ## Roadmap
 
 - [x] Stage 1: dataset setup, Bronze/Silver/Gold pipeline, data quality checks, tests
-- [ ] Stage 2: seven-day sales forecast (scikit-learn, chronological split, MAE/RMSE)
+- [x] Stage 2: seven-day revenue forecast (scikit-learn, chronological split, MAE/RMSE)
 - [ ] Stage 3: Ollama assistant grounded in Gold metrics and forecasts
 - [ ] Stage 4: Streamlit dashboard

@@ -4,6 +4,8 @@ import csv
 import pandas as pd
 import pytest
 
+pytest.importorskip("pyspark")  # Spark tests need requirements-spark.txt
+
 from retail_analytics.bronze import SOURCE_COLUMNS
 from retail_analytics.config import Settings
 from retail_analytics.pipeline import export_gold_csv, run_bronze, run_gold, run_silver
